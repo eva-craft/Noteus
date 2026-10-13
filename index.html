@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Noteus</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: 'Georgia', serif;
+    background: #f5f0e6;
+    color: #333;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header { padding: 10px 20px 5px; flex-shrink: 0; text-align: center; }
+  h1 { font-size: 28px; margin: 0; letter-spacing: 2px; }
+  .subtitle { color: #777; font-size: 13px; font-style: italic; margin-top: 2px; }
+  .controls {
+    display: flex; justify-content: center; gap: 12px;
+    padding: 10px 20px; flex-wrap: wrap; flex-shrink: 0;
+    align-items: center;
+  }
+  button {
+    padding: 8px 18px; font-size: 14px;
+    border: 1px solid #a08860; background: #fffdf7;
+    border-radius: 4px; cursor: pointer;
+    transition: all 0.15s; font-family: inherit;
+  }
+  button:hover:not(:disabled) { background: #f0e6d2; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.active { background: #d4a95a; color: white; border-color: #a08860; }
+  #scrollDownBtn {
+    background: #d4a95a; color: #fff; border-color: #a08860;
+    display: none; font-weight: bold;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  }
+  #scrollDownBtn.visible { display: inline-block; }
+  #status {
+    text-align: center; font-size: 13px; color: #666;
+    min-height: 18px; flex-shrink: 0;
+  }
+  #currentNote {
+    text-align: center; font-size: 20px; font-weight: bold;
+    color: #7b5e2f; min-height: 26px; flex-shrink: 0;
+  }
+  #scoreWrapper {
+    flex: 1 1 auto; background: #fffdf7;
+    border-top: 2px solid #c9b590; border-bottom: 2px solid #c9b590;
+    margin: 10px 20px; overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    border-radius: 6px; position: relative;
+    cursor: grab;
+  }
+  #scoreWrapper:active { cursor: grabbing; }
+  #score { display: block; width: 100%; height: 100%; }
+  .info {
+    text-align: center; font-size: 12px; color: #888;
+    padding: 5px 20px 10px; flex-shrink: 0;
+  }
+  #scrollIndicator {
+    position: absolute; right: 6px; top: 10px; bottom: 10px;
+    width: 6px; background: rgba(0,0,0,0.06);
+    border-radius: 3px; pointer-events: none;
+  }
+  #scrollThumb {
+    position: absolute; left: 0; width: 100%;
+    background: rgba(160, 136, 96, 0.6);
+    border-radius: 3px;
+    transition: background 0.2s;
+  }
+  #tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(34, 120, 50, 0.95);
+    color: #fff;
+    font-size: 12px;
+    font-family: Georgia, serif;
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    transform: translate(-50%, -130%);
+    opacity: 0;
+    transition: opacity 0.12s;
+    z-index: 10;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  }
+  #tooltip.visible { opacity: 1; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Noteus</h1>
+    <div class="subtitle">Голос → Ноты</div>
+  </header>
+
+  <div class="controls">
+    <button id="startBtn">🎤 Включить микрофон</button>
+    <button id="stopBtn" disabled>⏹ Остановить</button>
+    <button id="clearBtn">🗑 Очистить</button>
+    <button id="scrollDownBtn">⬇ К последней ноте</button>
+  </div>
+
+  <div id="status">Нажмите «Включить микрофон», чтобы начать</div>
+  <div id="currentNote"></div>
+
+  <div id="scoreWrapper">
+    <canvas id="score"></canvas>
+    <div id="scrollIndicator"><div id="scrollThumb"></div></div>
+    <div id="tooltip"></div>
+  </div>
+
+  <div class="info">Кликните по ноте, чтобы услышать её. Колёсико мыши — прокрутка.</div>
+
+<script>
+/* ============ Noteus ============ */
+
+const canvas = document.getElementById('score');
+const ctx = canvas.getContext('2d');
+const wrapper = document.getElementById('scoreWrapper');
+const startBtn = document.getElementById('startBtn');
+const stopBtn  = document.getElementById('stopBtn');
+const clearBtn = document.getElementById('clearBtn');
+const scrollDownBtn = document.getElementById('scrollDownBtn');
+const statusEl = document.getElementById('status');
+const currentNoteEl = document.getElementById('currentNote');
+const scrollThumb = document.getElementById('scrollThumb');
+const tooltip = document.getElementById('tooltip');
+
+const NOTES_RU = ['До','До#','Ре','Ре#','Ми','Фа','Фа#','Соль','Соль#','Ля','Ля#','Си'];
+const NOTES_EN = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+const OCTAVE_NAMES = {
+  '-1': 'субконтроктавы', '0': 'контроктавы',
+  '1': 'большой', '2': 'малой', '3': 'первой',
+  '4': 'второй', '5': 'третьей', '6': 'четвёртой', '7': 'пятой'
+};
+
+const INTERVAL_NAMES = [
+  'чистая прима', 'малая секунда', 'большая секунда', 'малая терция',
+  'большая терция', 'чистая кварта', 'тритон', 'чистая квинта',
+  'малая секста', 'большая секста', 'малая септима', 'большая септима',
+  'чистая октава'
+];
+
+function intervalName(semitones) {
+  const s = Math.abs(semitones);
+  if (s === 0) return INTERVAL_NAMES[0];
+  if (s <= 12) return INTERVAL_NAMES[s];
+  const octaves = Math.floor(s / 12);
+  const rest = s % 12;
+  if (rest === 0) return INTERVAL_NAMES[12] + (octaves > 1 ? ` ×${octaves}` : '');
+  return INTERVAL_NAMES[rest] + ` + ${octaves} окт.`;
+}
+
+function octaveRu(octave) {
+  return OCTAVE_NAMES[String(octave)] || (octave + '-й октавы');
+}
+function midiToRuName(midi) {
+  const nameRu = NOTES_RU[((midi % 12) + 12) % 12];
+  const octave = Math.floor(midi / 12) - 1;
+  return `${nameRu} ${octaveRu(octave)}`;
+}
+
+// --- Сдвиги ---
+const OCTAVE_SHIFT = -12;        // сдвиг названия (на октаву ниже)
+const STAFF_OCTAVE_SHIFT = +12;  // сдвиг позиции на стане (на октаву выше)
+
+const MIN_MIDI = 38;
+const MAX_MIDI = 96;
+
+// --- Геометрия ---
+const COL_WIDTH = 65;
+const STAFF_TOP_MARGIN = 90;
+const LINE_SPACING = 14;
+const STAFF_HEIGHT = LINE_SPACING * 4;
+const LEFT_PAD = 70;
+const ROW_GAP = 90;
+const ROW_HEIGHT = STAFF_TOP_MARGIN + STAFF_HEIGHT + ROW_GAP;
+const NOTE_RADIUS_X = 7;
+const NOTE_RADIUS_Y = 5;
+
+// Цвет добавочных линеек — бледнее основных
+const LEDGER_COLOR = '#b8b0a0';
+const LEDGER_LINE_WIDTH = 1;
+
+// --- Прокрутка ---
+let scrollY = 0;
+let targetScrollY = 0;
+let contentHeight = 0;
+let viewportHeight = 0;
+let autoScrollEnabled = true;
+let userScrolledUp = false;
+let smoothScrollRaf = null;
+
+// midiToY: B3 (MIDI 59) — на 3-й линейке
+function midiToY(midi, staffTop) {
+  const staffMiddle = staffTop + STAFF_HEIGHT / 2;
+  return staffMiddle - ((midi - 59) / 2) * LINE_SPACING;
+}
+
+let recordedNotes = [];
+let intervalSegments = []; // { ax, ay, bx, by, midX, midY, label, a, b }
+
+// --- Аудио ---
+let audioCtx = null, analyser = null, micStream = null, sourceNode = null;
+let isListening = false, rafId = null, buffer = null;
+let lastDetectedMidi = null, stableCount = 0;
+let lastPushedMidi = null, lastPushTime = 0;
+const STABLE_FRAMES_REQUIRED = 6;
+const MIN_PUSH_INTERVAL = 350;
+
+function computePerRow() {
+  const available = canvas.clientWidth - LEFT_PAD - 40;
+  return Math.max(4, Math.floor(available / COL_WIDTH));
+}
+
+function computeContentHeight() {
+  const perRow = computePerRow();
+  const numRows = Math.max(1, Math.ceil(recordedNotes.length / perRow) || 1);
+  return STAFF_TOP_MARGIN + numRows * ROW_HEIGHT + 40;
+}
+
+function resizeCanvas() {
+  const rect = wrapper.getBoundingClientRect();
+  const cssW = Math.max(rect.width, 400);
+  const cssH = Math.max(rect.height, 200);
+  const dpr = window.devicePixelRatio || 1;
+
+  canvas.width  = Math.floor(cssW * dpr);
+  canvas.height = Math.floor(cssH * dpr);
+  canvas.style.width  = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  viewportHeight = cssH;
+  contentHeight = computeContentHeight();
+  clampScroll();
+  renderViewport();
+  updateScrollIndicator();
+}
+
+function clampScroll() {
+  const maxScroll = Math.max(0, contentHeight - viewportHeight);
+  scrollY = Math.max(0, Math.min(scrollY, maxScroll));
+  targetScrollY = Math.max(0, Math.min(targetScrollY, maxScroll));
+}
+
+function smoothScroll() {
+  const diff = targetScrollY - scrollY;
+  if (Math.abs(diff) < 0.5) {
+    scrollY = targetScrollY;
+    renderViewport();
+    updateScrollIndicator();
+    smoothScrollRaf = null;
+    return;
+  }
+  scrollY += diff * 0.18;
+  renderViewport();
+  updateScrollIndicator();
+  smoothScrollRaf = requestAnimationFrame(smoothScroll);
+}
+
+function setScrollTarget(y, animate = true) {
+  targetScrollY = y;
+  clampScroll();
+  if (!animate) {
+    scrollY = targetScrollY;
+    renderViewport();
+    updateScrollIndicator();
+    return;
+  }
+  if (smoothScrollRaf === null) {
+    smoothScrollRaf = requestAnimationFrame(smoothScroll);
+  }
+}
+
+function autoScrollToLastNote() {
+  if (!autoScrollEnabled || userScrolledUp) return;
+  if (recordedNotes.length === 0) return;
+
+  const last = recordedNotes[recordedNotes.length - 1];
+  const lastNoteBottom = last.y + 40;
+  const visibleBottom = scrollY + viewportHeight - 30;
+  if (lastNoteBottom > visibleBottom) {
+    const desired = lastNoteBottom - viewportHeight + 60;
+    setScrollTarget(desired, true);
+  }
+}
+
+// ---------- Отрисовка ----------
+function drawStaff(staffTop, width, offsetY) {
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    const y = staffTop - offsetY + i * LINE_SPACING;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+}
+
+function drawTrebleClef(staffTop, offsetY) {
+  ctx.save();
+  ctx.fillStyle = '#222';
+  ctx.font = `${STAFF_HEIGHT + 30}px "Times New Roman", serif`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.fillText('\u{1D11E}', 40, staffTop - offsetY + STAFF_HEIGHT / 2 + 2);
+  ctx.restore();
+}
+
+function drawSharp(x, y) {
+  ctx.save();
+  ctx.fillStyle = '#222';
+  ctx.font = 'bold 18px "Times New Roman", serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('♯', x - 16, y + 1);
+  ctx.restore();
+}
+
+function drawNoteHead(x, y, fillColor = '#111') {
+  ctx.beginPath();
+  ctx.ellipse(x, y, NOTE_RADIUS_X, NOTE_RADIUS_Y, -0.35, 0, Math.PI * 2);
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+function drawStem(x, y, up = true) {
+  const stemLen = LINE_SPACING * 3.2;
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  if (up) {
+    ctx.moveTo(x + NOTE_RADIUS_X - 1, y);
+    ctx.lineTo(x + NOTE_RADIUS_X - 1, y - stemLen);
+  } else {
+    ctx.moveTo(x - NOTE_RADIUS_X + 1, y);
+    ctx.lineTo(x - NOTE_RADIUS_X + 1, y + stemLen);
+  }
+  ctx.stroke();
+}
+
+// Рисует добавочные линейки для одной ноты (бледные)
+function drawLedgerLineForNote(n, offsetY) {
+  const staffTop = n.staffTop;
+  const staffBottom = staffTop + STAFF_HEIGHT;
+  const y = midiToY(n.staffMidi, staffTop);
+  const half = NOTE_RADIUS_X + 6;
+
+  ctx.strokeStyle = LEDGER_COLOR;
+  ctx.lineWidth = LEDGER_LINE_WIDTH;
+
+  // Над станом
+  if (y < staffTop - 1) {
+    for (let ly = staffTop - LINE_SPACING; ly >= y - 1; ly -= LINE_SPACING) {
+      const screenY = ly - offsetY;
+      ctx.beginPath();
+      ctx.moveTo(n.x - half, screenY);
+      ctx.lineTo(n.x + half, screenY);
+      ctx.stroke();
+    }
+  }
+  // Под станом
+  else if (y > staffBottom + 1) {
+    for (let ly = staffBottom + LINE_SPACING; ly <= y + 1; ly += LINE_SPACING) {
+      const screenY = ly - offsetY;
+      ctx.beginPath();
+      ctx.moveTo(n.x - half, screenY);
+      ctx.lineTo(n.x + half, screenY);
+      ctx.stroke();
+    }
+  }
+}
+
+// Рисует прерывистые зелёные линии интервалов между соседними нотами
+// и запоминает их геометрию для всплывающей подсказки
+function drawIntervals(offsetY, h) {
+  intervalSegments = [];
+  if (recordedNotes.length < 2) return;
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(34, 160, 60, 0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+
+  for (let i = 1; i < recordedNotes.length; i++) {
+    const a = recordedNotes[i - 1];
+    const b = recordedNotes[i];
+
+    // рисуем только между нотами одной строки
+    if (a.row !== b.row) continue;
+
+    const ay = a.y - offsetY;
+    const by = b.y - offsetY;
+    if (Math.max(ay, by) < -40 || Math.min(ay, by) > h + 40) continue;
+
+    // линия между головками
+    ctx.beginPath();
+    ctx.moveTo(a.x, ay);
+    ctx.lineTo(b.x, by);
+    ctx.stroke();
+
+    // короткие горизонтальные засечки на концах
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(a.x - 5, ay); ctx.lineTo(a.x + 5, ay);
+    ctx.moveTo(b.x - 5, by); ctx.lineTo(b.x + 5, by);
+    ctx.stroke();
+    ctx.setLineDash([5, 4]);
+
+    const semis = b.staffMidi - a.staffMidi;
+    intervalSegments.push({
+      ax: a.x, ay, bx: b.x, by,
+      midX: (a.x + b.x) / 2,
+      midY: (ay + by) / 2,
+      label: intervalName(semis),
+      a, b
+    });
+  }
+
+  ctx.restore();
+}
+
+function renderViewport() {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const offsetY = scrollY;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#fffdf7';
+  ctx.fillRect(0, 0, w, h);
+
+  if (recordedNotes.length === 0) {
+    intervalSegments = [];
+    const staffTop = STAFF_TOP_MARGIN;
+    if (staffTop - offsetY < h && staffTop - offsetY + STAFF_HEIGHT > 0) {
+      drawStaff(staffTop, w, offsetY);
+      drawTrebleClef(staffTop, offsetY);
+    }
+    return;
+  }
+
+  const perRow = computePerRow();
+  const numRows = Math.ceil(recordedNotes.length / perRow);
+
+  // Позиционирование нот
+  recordedNotes.forEach((n, idx) => {
+    const row = Math.floor(idx / perRow);
+    const col = idx % perRow;
+    const staffTop = STAFF_TOP_MARGIN + row * ROW_HEIGHT;
+    const x = LEFT_PAD + 30 + col * COL_WIDTH;
+    const y = midiToY(n.staffMidi, staffTop);
+    n.x = x; n.y = y; n.staffTop = staffTop; n.row = row;
+  });
+
+  const rowBuckets = [];
+  for (let i = 0; i < numRows; i++) rowBuckets.push([]);
+  recordedNotes.forEach(n => rowBuckets[n.row].push(n));
+
+  // 1) Станы и ключи
+  for (let row = 0; row < numRows; row++) {
+    const staffTop = STAFF_TOP_MARGIN + row * ROW_HEIGHT;
+    const screenTop = staffTop - offsetY;
+    const screenBottom = staffTop + STAFF_HEIGHT - offsetY;
+    if (screenBottom < -100 || screenTop > h + 100) continue;
+
+    // Подсветка строки
+    ctx.save();
+    ctx.strokeStyle = 'rgba(201, 181, 144, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, staffTop - STAFF_TOP_MARGIN - offsetY + 0.5,
+                   w - 1, ROW_HEIGHT - 0.5);
+    ctx.restore();
+
+    drawStaff(staffTop, w, offsetY);
+    drawTrebleClef(staffTop, offsetY);
+  }
+
+  // 2) Добавочные линейки (рисуем ПЕРЕД нотами, чтобы головки были поверх)
+  for (const n of recordedNotes) {
+    if (n.y - offsetY < -60 || n.y - offsetY > h + 60) continue;
+    drawLedgerLineForNote(n, offsetY);
+  }
+
+  // 2.5) Интервалы между соседними нотами
+  drawIntervals(offsetY, h);
+
+  // 3) Ноты
+  for (const n of recordedNotes) {
+    const screenY = n.y - offsetY;
+    if (screenY < -50 || screenY > h + 50) continue;
+    drawNoteHead(n.x, screenY, '#111');
+    drawStem(n.x, screenY, n.staffMidi < 71);
+    if (n.name.includes('#')) drawSharp(n.x, screenY);
+  }
+}
+
+function layoutAndDraw() {
+  contentHeight = computeContentHeight();
+  clampScroll();
+  renderViewport();
+  updateScrollIndicator();
+}
+
+function updateScrollIndicator() {
+  const maxScroll = Math.max(0, contentHeight - viewportHeight);
+  if (maxScroll <= 0) {
+    scrollThumb.style.height = '0px';
+    return;
+  }
+  const thumbH = Math.max(20, (viewportHeight / contentHeight) * viewportHeight * 0.9);
+  const thumbTop = (scrollY / maxScroll) * (viewportHeight * 0.9 - thumbH) + 5;
+  scrollThumb.style.height = thumbH + 'px';
+  scrollThumb.style.top = thumbTop + 'px';
+
+  if (userScrolledUp && recordedNotes.length > 0) {
+    scrollDownBtn.classList.add('visible');
+  } else {
+    scrollDownBtn.classList.remove('visible');
+  }
+}
+
+wrapper.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const maxScroll = Math.max(0, contentHeight - viewportHeight);
+  if (maxScroll <= 0) return;
+
+  const delta = e.deltaY;
+  setScrollTarget(scrollY + delta, true);
+
+  if (delta < 0 && targetScrollY < maxScroll - 10) {
+    userScrolledUp = true;
+  } else if (targetScrollY >= maxScroll - 10) {
+    userScrolledUp = false;
+  }
+  updateScrollIndicator();
+  tooltip.classList.remove('visible');
+}, { passive: false });
+
+// ---------- Определение высоты ----------
+function autoCorrelate(buf, sampleRate) {
+  const SIZE = buf.length;
+  let rms = 0;
+  for (let i = 0; i < SIZE; i++) { const v = buf[i]; rms += v * v; }
+  rms = Math.sqrt(rms / SIZE);
+  if (rms < 0.008) return -1;
+
+  let r1 = 0, r2 = SIZE - 1;
+  const thres = 0.2;
+  for (let i = 0; i < SIZE/2; i++) {
+    if (Math.abs(buf[i]) < thres) { r1 = i; break; }
+  }
+  for (let i = 1; i < SIZE/2; i++) {
+    if (Math.abs(buf[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+  }
+  const b = buf.slice(r1, r2);
+  const newSize = b.length;
+  if (newSize < 128) return -1;
+
+  const c = new Float32Array(newSize).fill(0);
+  for (let i = 0; i < newSize; i++) {
+    for (let j = 0; j < newSize - i; j++) {
+      c[i] += b[j] * b[j + i];
+    }
+  }
+  let d = 0;
+  while (c[d] > c[d + 1]) d++;
+  let maxval = -1, maxpos = -1;
+  for (let i = d; i < newSize; i++) {
+    if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+  }
+  let T0 = maxpos;
+  const x1 = c[T0 - 1] || 0, x2 = c[T0], x3 = c[T0 + 1] || 0;
+  const a = (x1 + x3 - 2 * x2) / 2;
+  const bb = (x3 - x1) / 2;
+  if (a) T0 = T0 - bb / (2 * a);
+  return sampleRate / T0;
+}
+
+function freqToMidi(freq) {
+  return Math.round(69 + 12 * Math.log2(freq / 440));
+}
+
+// ---------- Запись ноты ----------
+function pushNote(midi) {
+  if (midi < MIN_MIDI || midi > MAX_MIDI) return;
+  const now = performance.now();
+  if (midi === lastPushedMidi && now - lastPushTime < MIN_PUSH_INTERVAL) return;
+
+  const displayMidi = midi + OCTAVE_SHIFT;
+  const staffMidi = displayMidi + STAFF_OCTAVE_SHIFT;
+
+  const nameEn = NOTES_EN[((displayMidi % 12) + 12) % 12];
+  const octave = Math.floor(displayMidi / 12) - 1;
+
+  recordedNotes.push({
+    midi,
+    displayMidi,
+    staffMidi,
+    name: nameEn,
+    octave,
+    ruName: midiToRuName(displayMidi),
+    x: 0, y: 0, staffTop: 0, row: 0
+  });
+  lastPushedMidi = midi;
+  lastPushTime = now;
+
+  layoutAndDraw();
+  autoScrollToLastNote();
+}
+
+// ---------- Основной цикл ----------
+function loop() {
+  if (!analyser) return;
+  analyser.getFloatTimeDomainData(buffer);
+  const freq = autoCorrelate(buffer, audioCtx.sampleRate);
+
+  if (freq > 0) {
+    const midi = freqToMidi(freq);
+    currentNoteEl.textContent = midiToRuName(midi + OCTAVE_SHIFT);
+    if (midi === lastDetectedMidi) {
+      stableCount++;
+      if (stableCount === STABLE_FRAMES_REQUIRED) pushNote(midi);
+    } else {
+      lastDetectedMidi = midi;
+      stableCount = 1;
+    }
+  } else {
+    currentNoteEl.textContent = '';
+    lastDetectedMidi = null;
+    stableCount = 0;
+  }
+  rafId = requestAnimationFrame(loop);
+}
+
+// ---------- Управление ----------
+async function startListening() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+  } catch (e) {
+    statusEl.textContent = 'Не удалось получить доступ к микрофону: ' + e.message;
+    return;
+  }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  buffer = new Float32Array(analyser.fftSize);
+  sourceNode = audioCtx.createMediaStreamSource(micStream);
+  sourceNode.connect(analyser);
+
+  isListening = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  startBtn.classList.add('active');
+  statusEl.textContent = '🎤 Слушаю... пойте ноты';
+  loop();
+}
+
+function stopListening() {
+  isListening = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  if (sourceNode) sourceNode.disconnect();
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (audioCtx) audioCtx.close();
+  analyser = null; audioCtx = null; micStream = null; sourceNode = null;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  startBtn.classList.remove('active');
+  statusEl.textContent = 'Остановлено';
+  currentNoteEl.textContent = '';
+}
+
+function clearScore() {
+  recordedNotes = [];
+  intervalSegments = [];
+  lastPushedMidi = null;
+  scrollY = 0; targetScrollY = 0;
+  userScrolledUp = false;
+  autoScrollEnabled = true;
+  tooltip.classList.remove('visible');
+  layoutAndDraw();
+}
+
+// ---------- Воспроизведение ----------
+function playMidi(midi, duration = 0.6) {
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const freq = 440 * Math.pow(2, (midi - 69) / 12);
+  const osc = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  const now = ac.currentTime;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(0.35, now + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.start(now); osc.stop(now + duration + 0.05);
+  setTimeout(() => ac.close(), (duration + 0.2) * 1000);
+}
+
+// ---------- Клик по ноте ----------
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top + scrollY;
+
+  for (const n of recordedNotes) {
+    const dx = (x - n.x) / (NOTE_RADIUS_X + 6);
+    const dy = (y - n.y) / (NOTE_RADIUS_Y + 6);
+    if (dx*dx + dy*dy <= 1.6) {
+      playMidi(n.midi);
+      flashNote(n);
+      return;
+    }
+  }
+});
+
+let flashTimer = null;
+function flashNote(note) {
+  renderViewport();
+  const screenY = note.y - scrollY;
+  ctx.beginPath();
+  ctx.ellipse(note.x, screenY, NOTE_RADIUS_X + 4, NOTE_RADIUS_Y + 4, -0.35, 0, Math.PI * 2);
+  ctx.strokeStyle = '#e63946';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  ctx.save();
+  ctx.fillStyle = '#e63946';
+  ctx.font = 'bold 13px Georgia, serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(note.ruName, note.x + 14, screenY);
+  ctx.restore();
+
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => renderViewport(), 500);
+}
+
+// ---------- Всплывающая подсказка ----------
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx*dx + dy*dy;
+  let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const worldY = my + scrollY;
+
+  let hint = null;
+
+  // Сначала — нота (приоритет)
+  for (const n of recordedNotes) {
+    const dx = (mx - n.x) / (NOTE_RADIUS_X + 6);
+    const dy = (worldY - n.y) / (NOTE_RADIUS_Y + 6);
+    if (dx*dx + dy*dy <= 1.6) {
+      hint = { x: n.x, y: n.y - scrollY, text: n.ruName };
+      break;
+    }
+  }
+
+  // Затем — интервал
+  if (!hint) {
+    for (const seg of intervalSegments) {
+      if (distToSegment(mx, my, seg.ax, seg.ay, seg.bx, seg.by) < 6) {
+        hint = { x: seg.midX, y: seg.midY, text: seg.label };
+        break;
+      }
+    }
+  }
+
+  if (hint) {
+    tooltip.textContent = hint.text;
+    tooltip.style.left = hint.x + 'px';
+    tooltip.style.top  = hint.y + 'px';
+    tooltip.classList.add('visible');
+    canvas.style.cursor = 'pointer';
+  } else {
+    tooltip.classList.remove('visible');
+    canvas.style.cursor = '';
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  tooltip.classList.remove('visible');
+});
+
+startBtn.addEventListener('click', startListening);
+stopBtn.addEventListener('click', stopListening);
+clearBtn.addEventListener('click', clearScore);
+
+scrollDownBtn.addEventListener('click', () => {
+  userScrolledUp = false;
+  autoScrollEnabled = true;
+  const maxScroll = Math.max(0, contentHeight - viewportHeight);
+  setScrollTarget(maxScroll, true);
+});
+
+window.addEventListener('resize', resizeCanvas);
+
+resizeCanvas();
+</script>
+</body>
+</html>
